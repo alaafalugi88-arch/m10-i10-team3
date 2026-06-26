@@ -1,71 +1,106 @@
-# Integration 10 — Dockerize the Four-Service Stack
+# m10-i10 — Multi-Service Docker Compose Stack
 
-Compose the Lab's FastAPI backend and Next.js frontend with
-**containerized Neo4j and Weaviate** into a one-command Dockerized
-stack delivered as a 3-Team-Member team.
+A four-service RAG stack: FastAPI + Next.js + Neo4j + Weaviate.
+One command brings everything up.
 
-> Read the full Integration guide on the cohort site:
-> <https://LevelUp-Applied-AI.github.io/aispire-14005-pages/modules/module-10/a0cae6a2>
->
-> Team-facing spec:
-> <https://LevelUp-Applied-AI.github.io/aispire-14005-pages/modules/module-10/4ba363ed>
+## Services
 
-## Team Roles
+| Service  | Port | Description          |
+|----------|------|----------------------|
+| neo4j    | 7687 / 7474 | Graph database |
+| weaviate | 8080 | Vector store         |
+| api      | 8000 | FastAPI RAG backend  |
+| web      | 3000 | Next.js frontend     |
 
-See [TEAM.md](TEAM.md) for role assignments and the per-role file
-checklist. See [CONTRIBUTING.md](CONTRIBUTING.md) for the internal-PR
-review convention and the contract-change protocol.
+## Prerequisites
 
-## Starter Layout
+- Docker Desktop running
+- Git
 
-```
-api/                      Pre-implemented FastAPI backend (do not modify
-                          unless extending; the Backend lead extends here)
-web/                      Pre-implemented Next.js frontend
-docker-compose.yml        Skeleton — Infra-Integration lead authors
-scripts/
-  seed_neo4j.sh           Stub — Infra-Integration lead authors
-  seed_weaviate.sh        Stub — Infra-Integration lead authors
-  healthcheck_stack.sh    Stub — Infra-Integration lead authors
-.env.example              Placeholder credentials
-TEAM.md                   Team roster — team fills in
-CONTRIBUTING.md           Branch convention + internal-PR protocol
-```
+## Quickstart
 
-## Bring up the stack (runbook — Infra-Integration lead drafts this)
+### 1. Clone the repo
 
 ```bash
-cp .env.example .env  # edit values; never commit .env
-
-docker compose up -d --build
-bash scripts/healthcheck_stack.sh
-bash scripts/seed_neo4j.sh
-bash scripts/seed_weaviate.sh
-
-# Demo curl
-curl -s -X POST http://localhost:8000/rag/answer \
-  -H 'Content-Type: application/json' \
-  -d '{"question": "How do I prep ginger for stir-fry?"}' | jq .
-
-# Open the web UI at http://localhost:3000/rag
+git clone https://github.com/<team-fork>/m10-i10-team-N.git
+cd m10-i10-team-N
 ```
 
-## Submission
+### 2. Set up environment
 
-Team submission (one per team): the team submitter pastes the team
-fork's main-branch URL into TalentLMS → Module 10 → Integration Task.
+```bash
+cp .env.example .env
+```
 
-Per-Team-Member participation confirmation (one per Team Member): each
-Team Member separately submits a TalentLMS checkbox confirming
-participation, naming their assigned role, and naming the files they
-authored.
+Open `.env` and replace `<password>` with your chosen password.
+Make sure `NEO4J_AUTH` and `NEO4J_PASSWORD` use the **same** value.
 
----
+### 3. Start the stack
 
-## License
+```bash
+docker compose up -d --build
+```
 
-This repository is provided for educational use only. See
-[LICENSE](LICENSE) for terms. You may clone and modify this repository
-for personal learning and practice, and reference code you wrote here
-in your professional portfolio. Redistribution outside this course is
-not permitted.
+### 4. Wait for all services to be healthy
+
+```bash
+bash scripts/healthcheck_stack.sh
+```
+
+Or check manually:
+
+```bash
+docker compose ps
+```
+
+Expected healthy order: neo4j → weaviate → api → web
+The api may take up to 3-5 min on first boot (downloads spaCy + flan-t5-base).
+
+### 5. Seed the databases
+
+Run both from the **repo root**:
+
+```bash
+bash scripts/seed_neo4j.sh
+bash scripts/seed_weaviate.sh
+```
+
+### 6. Test the API
+
+```bash
+curl -X POST http://localhost:8000/rag/answer \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do I prep ginger for stir-fry?"}'
+```
+
+Expected: HTTP 200 with `answer`, `citations`, and `confidence` fields.
+
+### 7. Open the browser
+
+Navigate to: http://localhost:3000/rag
+
+Type: `Find Sichuan recipes that use ginger` and click Submit.
+You should see a cited answer rendered on the page.
+
+### 8. Teardown
+
+```bash
+docker compose down -v
+```
+
+The `-v` flag removes the named volumes (neo4j_data, weaviate_data).
+Re-running steps 3-5 starts fresh.
+
+## Team
+
+See `TEAM.md` for role assignments and contribution summary.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `ModuleNotFoundError: No module named 'api'` | Make sure `build.context: .` in docker-compose.yml |
+| Neo4j healthcheck fails | Check NEO4J_AUTH matches NEO4J_PASSWORD in .env |
+| Weaviate never healthy | Uses `wget` not `curl` — do not change the healthcheck |
+| API stuck starting | Normal on cold boot — wait up to 5 min for model download |
+| seed script not found | Run scripts from repo root, not from inside scripts/ |
