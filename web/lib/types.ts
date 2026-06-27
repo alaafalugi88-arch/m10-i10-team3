@@ -1,3 +1,4 @@
+// web/lib/types.ts
 // TypeScript interfaces — must mirror api/models.py exactly.
 // snake_case field names preserved (chunk_id, not chunkId).
 
