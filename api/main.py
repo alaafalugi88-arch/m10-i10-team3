@@ -9,7 +9,16 @@ Discipline gates the autograder enforces:
 - `/readyz` probes Neo4j (`RETURN 1`) AND Weaviate (`client.is_ready()`)
   within 2 seconds; failure → 503.
 - `/healthz` does NOT touch Neo4j or Weaviate.
+
+Integration deltas (backend/api-endpoints):
+- Service URLs / credentials / origin read through `Settings` so the same
+  image runs under Compose (bolt://neo4j:7687) and locally (localhost).
+- `/rag/answer` converts a downstream-service failure (Weaviate/generator)
+  into a structured 503 — consistent with `/kg/query`'s 422 and `/readyz`'s 503.
+- `api.*` loggers emit at LOG_LEVEL so the Infra lead can read them in
+  `docker compose logs api`.
 """
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -35,23 +44,35 @@ from .models import (
 )
 from .nlp import extract_entities
 from .rag import compose_rag
+from .settings import Settings
 from .w9b_mapper.errors import UnsupportedQueryError
 from .w9b_mapper.shapes import SUPPORTED_PATTERNS
+
+logging.getLogger("api").setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("api.main")
+
+settings = Settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.settings = settings
     app.state.neo4j_driver = GraphDatabase.driver(
-        os.environ["NEO4J_URI"],
-        auth=(os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"]),
+        settings.neo4j_uri,
+        auth=(settings.neo4j_user, settings.neo4j_password),
     )
-    app.state.weaviate_client = weaviate.Client(os.environ["WEAVIATE_URL"])
+    app.state.weaviate_client = weaviate.Client(settings.weaviate_url)
     app.state.nlp = spacy.load("en_core_web_sm")
     app.state.generator = load_generator()
     # Same sentence-transformers model the seed used at ingest. The
     # Weaviate class is `vectorizer=none`, so /rag/answer encodes the
     # query externally and queries via `with_near_vector`.
     app.state.embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    logger.info(
+        "lifespan.ready neo4j_uri=%s weaviate_url=%s",
+        settings.neo4j_uri,
+        settings.weaviate_url,
+    )
     yield
     app.state.neo4j_driver.close()
 
@@ -59,7 +80,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="M10 Recipe Service", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.environ.get("WEB_ORIGIN", "http://localhost:3000")],
+    allow_origins=[settings.web_origin],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,7 +115,14 @@ def rag_answer(
     generator=Depends(get_generator),
     embedder=Depends(get_embedder),
 ) -> RAGResponse:
-    result = compose_rag(req.question, embedder, weaviate_client, generator, k=req.k)
+    try:
+        result = compose_rag(req.question, embedder, weaviate_client, generator, k=req.k)
+    except Exception as exc:  # downstream (Weaviate/generator) failure
+        logger.exception("rag.answer.failed")
+        raise HTTPException(
+            status_code=503,
+            detail={"reason": "rag_unavailable", "error": exc.__class__.__name__},
+        )
     return RAGResponse(**result)
 
 
